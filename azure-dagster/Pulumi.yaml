@@ -1,10 +1,19 @@
 name: azure-dagster
 description: A minimal Azure Native Python Pulumi program
+
+# Comment out uv runtime if you use pip.
 runtime:
   name: python
   options:
-    toolchain: pip
-    virtualenv: venv
+    toolchain: uv
+
+# Swap runtime if you use pip.
+# runtime:
+#   name: python
+#   options:
+#     toolchain: pip
+#     virtualenv: venv
+
 config:
   pulumi:tags:
     value:

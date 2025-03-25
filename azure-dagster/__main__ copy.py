@@ -1,3 +1,5 @@
+"""An Azure RM Python Pulumi program"""
+
 import pulumi
 from pulumi_azure_native import app
 from pulumi_azure_native import containerregistry
@@ -6,8 +8,8 @@ from pulumi_azure_native import operationalinsights
 from pulumi_azure_native import managedidentity
 from pulumi_azure_native import authorization
 from pulumi_azure_native import dbforpostgresql
+from pulumi_docker import Image, DockerBuild, ImageRegistry
 from pulumi_azure_native.containerregistry import list_registry_credentials_output
-from pulumi_docker import Image
 
 # Get config values
 config = pulumi.Config()
@@ -15,16 +17,21 @@ ACR_RG = config.require("ACR_RG")
 ACR_NAME = config.require("ACR_NAME")
 IMAGE_TAG = config.require("IMAGE_TAG")
 IMAGE_NAME_USER_CODE = config.require("IMAGE_NAME_USER_CODE")
+IMAGE_NAME_DAEMON = config.require("IMAGE_NAME_DAEMON")
+IMAGE_NAME_WEB_SERVER = config.require("IMAGE_NAME_WEB_SERVER")
 SUBSCRIPTION_ID = config.require("SUBSCRIPTION_ID")
 DAGSTER_POSTGRES_PASSWORD = config.require_secret("DAGSTER_POSTGRES_PASSWORD")
 DAGSTER_POSTGRES_PORT = config.require("DAGSTER_POSTGRES_PORT")
 USER_CODE_PORT = config.require("USER_CODE_PORT")
 
+# Resource Group with proper Output handling
 resource_group = resources.ResourceGroup(
     "dagsterResourceGroup",
     resource_group_name=ACR_RG,
-    location="eastus"
+    location="eastus"  # or your preferred Azure region
 )
+
+# Azure Cosmos DB for PostgreSQL cluster
 
 single_node_pg_cluster = dbforpostgresql.Cluster(
     "clusterSingleNode",
@@ -42,7 +49,9 @@ single_node_pg_cluster = dbforpostgresql.Cluster(
     enable_shards_on_coordinator=True,
     postgresql_version="15",
     preferred_primary_zone="1",
-    tags={"Environment": "Prod"})
+    tags={
+        "Environment": "Prod",
+    })
 
 firewall_rule = dbforpostgresql.v20221108.FirewallRule(
     "firewallRule",
@@ -53,16 +62,22 @@ firewall_rule = dbforpostgresql.v20221108.FirewallRule(
     end_ip_address="255.255.255.255",
     opts=pulumi.ResourceOptions(depends_on=[single_node_pg_cluster]))
 
+# Container Environment
+## Logs
 container_env_logs = operationalinsights.Workspace("workspace",
     workspace_name="acctest-01",
     location=resource_group.location,
     resource_group_name=resource_group.name,
-    sku={"name": operationalinsights.WorkspaceSkuNameEnum.PER_GB2018},
+    sku={
+        "name": operationalinsights.WorkspaceSkuNameEnum.PER_GB2018
+    },
     retention_in_days=30)
 
+## Environment
 log_shared_keys_o = operationalinsights.get_workspace_shared_keys_output(
     resource_group_name=resource_group.name,
-    workspace_name=container_env_logs.name)
+    workspace_name=container_env_logs.name
+)
 
 container_env = app.ManagedEnvironment(
     "managedEnvironmentResource",
@@ -78,63 +93,60 @@ container_env = app.ManagedEnvironment(
         )
     ),
     tags={"Environment": "Production"},
-    zone_redundant=False)
+    zone_redundant=False,  # Optional: Set to True for zone-redundant if needed
+)
 
+# ACR
 acr = containerregistry.Registry(
     "acr",
     registry_name=ACR_NAME,
     resource_group_name=resource_group.name,
     location=resource_group.location,
-    sku=containerregistry.SkuArgs(name="Basic"),
+    sku=containerregistry.SkuArgs(
+        name="Basic"
+    ),
     admin_user_enabled=True,
-    opts=pulumi.ResourceOptions(parent=resource_group))
+    opts=pulumi.ResourceOptions(parent=resource_group)
+)
 
 acr_credentials = list_registry_credentials_output(
     resource_group_name=resource_group.name,
-    registry_name=acr.name)
+    registry_name=acr.name
+)
 
 acr_username = acr_credentials.username
 acr_password = acr_credentials.passwords[0].value
 
 user_code_image = Image(
     "userCodeImage",
-    build={
-        "context": ".",
-        "dockerfile": "../build-test-push-images/Dockerfile_user_code"
-    },
+    build=DockerBuild(context="./user_code"),
     image_name=acr.login_server.apply(lambda r: f"{r}/docker_example_user_code_image:{IMAGE_TAG}"),
-    registry={
-        "server": acr.login_server,
-        "username": acr_username,
-        "password": acr_password,
-    }
+    registry=ImageRegistry(
+        server=acr.login_server,
+        username=acr_username,
+        password=acr_password,
+    ),
 )
-
-dagster_image = Image(
-    "dagsterImage",
-    build={
-        "context": ".",
-        "dockerfile": "../build-test-push-images/Dockerfile_dagster"
-    },
-    image_name=acr.login_server.apply(lambda r: f"{r}/docker_example_dagster:{IMAGE_TAG}"),
-    registry={
-        "server": acr.login_server,
-        "username": acr_username,
-        "password": acr_password,
-    }
+daemon_image = Image(
+    "daemonImage",
+    build=DockerBuild(context="./daemon"),
+    image_name=acr.login_server.apply(lambda r: f"{r}/docker_example_daemon:{IMAGE_TAG}"),
+    registry=ImageRegistry(
+        server=acr.login_server,
+        username=acr_username,
+        password=acr_password,
+    ),
 )
-
-# not sure, is the redundant??
-# web_server_image = Image(
-#     "webServerImage",
-#     build=DockerBuild(context="./web_server"),
-#     image_name=acr.login_server.apply(lambda r: f"{r}/docker_example_webserver:{IMAGE_TAG}"),
-#     registry=ImageRegistry(
-#         server=acr.login_server,
-#         username=acr_username,
-#         password=acr_password,
-#     ),
-# )
+web_server_image = Image(
+    "webServerImage",
+    build=DockerBuild(context="./web_server"),
+    image_name=acr.login_server.apply(lambda r: f"{r}/docker_example_webserver:{IMAGE_TAG}"),
+    registry=ImageRegistry(
+        server=acr.login_server,
+        username=acr_username,
+        password=acr_password,
+    ),
+)
 
 
 # Update acr_o references to use the new acr resource
@@ -166,9 +178,8 @@ acr_pull_assignment = authorization.RoleAssignment(
 )
 
 # Update container image references
-# no longer used.
-# def get_container_image(acr_login_server, image_name, tag):
-#     return pulumi.Output.concat(acr_login_server, "/", image_name, ":", tag)
+def get_container_image(acr_login_server, image_name, tag):
+    return pulumi.Output.concat(acr_login_server, "/", image_name, ":", tag)
 
 # Update user code app
 user_code_app = app.ContainerApp(
@@ -183,7 +194,8 @@ user_code_app = app.ContainerApp(
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=user_code_image.image_name,
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_USER_CODE, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
             name="usercode",
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
@@ -275,7 +287,8 @@ daemon_app = app.ContainerApp(
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=dagster_image.image_name,
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_DAEMON, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
             name="daemontwo",
             env=get_container_env_vars(),
             resources=app.ContainerResourcesArgs(
@@ -311,7 +324,8 @@ web_server_app = app.ContainerApp(
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=dagster_image.image_name,
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_WEB_SERVER, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
             name="webservertwo",
             env=get_container_env_vars(),
             resources=app.ContainerResourcesArgs(
