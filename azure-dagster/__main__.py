@@ -10,11 +10,24 @@ from pulumi_azure_native import managedidentity
 from pulumi_azure_native import authorization
 from pulumi_azure_native import dbforpostgresql
 
-# Resource Group
-resource_group = resources.ResourceGroup("deletsfsdelater")
+# Environment variables as Outputs
+ACR_RG = pulumi.Output.from_input(os.getenv("ACR_RG"))
+ACR_NAME = pulumi.Output.from_input(os.getenv("ACR_NAME"))
+IMAGE_TAG = pulumi.Output.from_input(os.getenv("IMAGE_TAG"))
+IMAGE_NAME_USER_CODE = pulumi.Output.from_input(os.getenv("IMAGE_NAME_USER_CODE"))
+IMAGE_NAME_DAEMON = pulumi.Output.from_input(os.getenv("IMAGE_NAME_DAEMON"))
+IMAGE_NAME_WEB_SERVER = pulumi.Output.from_input(os.getenv("IMAGE_NAME_WEB_SERVER"))
+SUBSCRIPTION_ID = pulumi.Output.from_input(os.getenv("SUBSCRIPTION_ID"))
+
+# Resource Group with proper Output handling
+resource_group = resources.ResourceGroup(
+    "dagsterResourceGroup",
+    resource_group_name=ACR_RG,
+    location="eastus"  # or your preferred Azure region
+)
 
 # Azure Cosmos DB for PostgreSQL cluster
-DAGSTER_POSTGRES_PASSWORD = os.environ["DAGSTER_POSTGRES_PASSWORD"]
+DAGSTER_POSTGRES_PASSWORD = pulumi.Output.from_input(os.environ["DAGSTER_POSTGRES_PASSWORD"])
 
 single_node_pg_cluster = dbforpostgresql.Cluster(
     "clusterSingleNode",
@@ -80,15 +93,22 @@ container_env = app.ManagedEnvironment(
 )
 
 # ACR
-ACR_NAME = os.getenv("ACR_NAME")
-ACR_RG = os.getenv("ACR_RG")
-acr_o = containerregistry.get_registry_output(
+acr = containerregistry.Registry(
+    "acr",
     registry_name=ACR_NAME,
-    resource_group_name=ACR_RG)
+    resource_group_name=resource_group.name,
+    location=resource_group.location,
+    sku=containerregistry.SkuArgs(
+        name="Basic"
+    ),
+    admin_user_enabled=True,
+    opts=pulumi.ResourceOptions(parent=resource_group)
+)
+
+# Update acr_o references to use the new acr resource
+acr_o = pulumi.Output.from_input(acr)
 
 # Container Apps
-IMAGE_TAG = os.getenv("IMAGE_TAG")
-
 ## Role to pull image from ACR
 container_app_identity = managedidentity.UserAssignedIdentity(
     "userAssignedIdentity",
@@ -99,8 +119,11 @@ container_app_identity = managedidentity.UserAssignedIdentity(
         "Environment": "Production"
     })
 
-SUBSCRIPTION_ID = os.getenv("SUBSCRIPTION_ID")
-acr_pull_built_in_id = f"/subscriptions/{SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+acr_pull_built_in_id = pulumi.Output.concat(
+    "/subscriptions/", 
+    SUBSCRIPTION_ID, 
+    "/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+)
 
 acr_pull_assignment = authorization.RoleAssignment(
     "acrPullAssignment",
@@ -110,12 +133,14 @@ acr_pull_assignment = authorization.RoleAssignment(
     scope=acr_o.apply(lambda x: x.id),
 )
 
-## Container Apps - User Code
-IMAGE_NAME_USER_CODE = os.getenv("IMAGE_NAME_USER_CODE")
-USER_CODE_APP_NAME = "usercode"
+# Update container image references
+def get_container_image(acr_login_server, image_name, tag):
+    return pulumi.Output.concat(acr_login_server, "/", image_name, ":", tag)
+
+# Update user code app
 user_code_app = app.ContainerApp(
     "userCodeApp",
-    container_app_name=USER_CODE_APP_NAME,
+    container_app_name="usercode",
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
@@ -125,8 +150,9 @@ user_code_app = app.ContainerApp(
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=acr_o.apply(lambda x: f"{x.login_server}/{IMAGE_NAME_USER_CODE}:{IMAGE_TAG}"),
-            name=USER_CODE_APP_NAME,
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_USER_CODE, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
+            name="usercode",
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -148,20 +174,61 @@ user_code_app = app.ContainerApp(
             )]
     ))
 
-DAGSTER_POSTGRES_HOST = single_node_pg_cluster.server_names[0].fully_qualified_domain_name
-DAGSTER_POSTGRES_USER = "citus" # Using default admin user
-DAGSTER_POSTGRES_DB = "citus" # Using default DB
-DAGSTER_POSTGRES_PORT = os.environ["DAGSTER_POSTGRES_PORT"]
-USER_CODE_HOST = "usercode" # Harcoded value, possible solution below:
-# USER_CODE_HOST = user_code_app.configuration.apply(lambda config: config.ingress.fqdn)
-USER_CODE_PORT = os.environ["USER_CODE_PORT"]
+# Update environment variable definitions to handle Output types
+DAGSTER_POSTGRES_HOST = single_node_pg_cluster.server_names.apply(
+    lambda names: names[0].fully_qualified_domain_name
+)
+DAGSTER_POSTGRES_USER = "citus"
+DAGSTER_POSTGRES_DB = "citus"
+DAGSTER_POSTGRES_PORT = pulumi.Output.from_input(os.environ["DAGSTER_POSTGRES_PORT"])
+USER_CODE_HOST = "usercode"
+USER_CODE_PORT = pulumi.Output.from_input(os.environ["USER_CODE_PORT"])
 
-## Container Apps - Daemon
-IMAGE_NAME_DAEMON = os.getenv("IMAGE_NAME_DAEMON")
-DAEMON_APP_NAME = "daemontwo"
+def make_container_env_vars(postgres_host, postgres_port, user_code_port, postgres_password):
+    return [
+        app.EnvironmentVarArgs(
+            name="DAGSTER_POSTGRES_HOST",
+            value=pulumi.Output.from_input(postgres_host)
+        ),
+        app.EnvironmentVarArgs(
+            name="DAGSTER_POSTGRES_USER",
+            value=DAGSTER_POSTGRES_USER
+        ),
+        app.EnvironmentVarArgs(
+            name="DAGSTER_POSTGRES_PASSWORD",
+            value=postgres_password  # Changed from secret_ref to direct value
+        ),
+        app.EnvironmentVarArgs(
+            name="DAGSTER_POSTGRES_DB",
+            value=DAGSTER_POSTGRES_DB
+        ),
+        app.EnvironmentVarArgs(
+            name="DAGSTER_POSTGRES_PORT",
+            value=pulumi.Output.from_input(postgres_port)
+        ),
+        app.EnvironmentVarArgs(
+            name="USER_CODE_HOST",
+            value=USER_CODE_HOST
+        ),
+        app.EnvironmentVarArgs(
+            name="USER_CODE_PORT",
+            value=pulumi.Output.from_input(user_code_port)
+        )
+    ]
+
+# Update container app templates to use all Output parameters
+def get_container_env_vars():
+    return pulumi.Output.all(
+        DAGSTER_POSTGRES_HOST,
+        DAGSTER_POSTGRES_PORT,
+        USER_CODE_PORT,
+        DAGSTER_POSTGRES_PASSWORD
+    ).apply(lambda args: make_container_env_vars(*args))
+
+# Update daemon app
 daemon_app = app.ContainerApp(
     "daemonApp",
-    container_app_name=DAEMON_APP_NAME,
+    container_app_name="daemontwo",
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
@@ -174,46 +241,14 @@ daemon_app = app.ContainerApp(
             app.RegistryCredentialsArgs(
                 identity=container_app_identity.id,
                 server=acr_o.apply(lambda x: x.login_server)
-            )],
-        secrets=[app.SecretArgs(
-            name="db-postgres-pwd",
-            value=DAGSTER_POSTGRES_PASSWORD
-        )]
+            )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=acr_o.apply(lambda x: f"{x.login_server}/{IMAGE_NAME_DAEMON}:{IMAGE_TAG}"),
-            name=DAEMON_APP_NAME,
-            env=[
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_HOST",
-                    value=DAGSTER_POSTGRES_HOST,
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_USER",
-                    value=DAGSTER_POSTGRES_USER
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_PASSWORD",
-                    secret_ref="db-postgres-pwd"
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_DB",
-                    value=DAGSTER_POSTGRES_DB,
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_PORT",
-                    value=DAGSTER_POSTGRES_PORT,
-                ),
-                app.EnvironmentVarArgs(
-                    name="USER_CODE_HOST",
-                    value=USER_CODE_HOST,
-                ),
-                app.EnvironmentVarArgs(
-                    name="USER_CODE_PORT",
-                    value=USER_CODE_PORT,
-                )
-            ],
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_DAEMON, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
+            name="daemontwo",
+            env=get_container_env_vars(),
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -221,12 +256,10 @@ daemon_app = app.ContainerApp(
         )]
     ))
 
-## Container Apps - Web Server
-IMAGE_NAME_WEB_SERVER = os.getenv("IMAGE_NAME_WEB_SERVER")
-WEB_SERVER_APP_NAME = "webservertwo"
+# Update web server app
 web_server_app = app.ContainerApp(
     "webServer",
-    container_app_name=WEB_SERVER_APP_NAME,
+    container_app_name="webservertwo",
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
@@ -245,46 +278,14 @@ web_server_app = app.ContainerApp(
             app.RegistryCredentialsArgs(
                 identity=container_app_identity.id,
                 server=acr_o.apply(lambda x: x.login_server)
-           )],
-        secrets=[app.SecretArgs(
-            name="db-postgres-pwd",
-            value=DAGSTER_POSTGRES_PASSWORD
-        )]
+            )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=acr_o.apply(lambda x: f"{x.login_server}/{IMAGE_NAME_WEB_SERVER}:{IMAGE_TAG}"),
-            name=WEB_SERVER_APP_NAME,
-            env=[
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_HOST",
-                    value=DAGSTER_POSTGRES_HOST,
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_USER",
-                    value=DAGSTER_POSTGRES_USER
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_PASSWORD",
-                    secret_ref="db-postgres-pwd"
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_DB",
-                    value=DAGSTER_POSTGRES_DB,
-                ),
-                app.EnvironmentVarArgs(
-                    name="DAGSTER_POSTGRES_PORT",
-                    value=DAGSTER_POSTGRES_PORT,
-                ),
-                app.EnvironmentVarArgs(
-                    name="USER_CODE_HOST",
-                    value=USER_CODE_HOST,
-                ),
-                app.EnvironmentVarArgs(
-                    name="USER_CODE_PORT",
-                    value=USER_CODE_PORT,
-                )
-            ],
+            image=pulumi.Output.all(acr.login_server, IMAGE_NAME_WEB_SERVER, IMAGE_TAG)
+                  .apply(lambda args: f"{args[0]}/{args[1]}:{args[2]}"),
+            name="webservertwo",
+            env=get_container_env_vars(),
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -292,10 +293,44 @@ web_server_app = app.ContainerApp(
         )]
     ))
 
-pulumi.export(
-    "webServerPublicUrl", 
-    web_server_app.configuration.apply(lambda config: config.ingress.fqdn))
+# Replace existing exports section with comprehensive exports
+# Resource Group
+pulumi.export("resourceGroupName", resource_group.name)
+pulumi.export("resourceGroupId", resource_group.id)
 
-pulumi.export(
-    "userCodeAppPublicUrl", 
-    user_code_app.configuration.apply(lambda config: config.ingress.fqdn))
+# Postgres
+pulumi.export("postgresClusterId", single_node_pg_cluster.id)
+pulumi.export("postgresHost", DAGSTER_POSTGRES_HOST)
+pulumi.export("postgresFirewallRuleId", firewall_rule.id)
+
+# Container Environment
+pulumi.export("containerEnvLogsWorkspaceId", container_env_logs.id)
+pulumi.export("containerEnvId", container_env.id)
+pulumi.export("containerEnvName", container_env.name)
+
+# ACR
+pulumi.export("acrId", acr.id)
+pulumi.export("acrLoginServer", acr.login_server)
+pulumi.export("acrName", acr.name)
+
+# Identity
+pulumi.export("containerAppIdentityId", container_app_identity.id)
+pulumi.export("containerAppIdentityPrincipalId", container_app_identity.principal_id)
+pulumi.export("containerAppIdentityClientId", container_app_identity.client_id)
+
+# Container Apps
+pulumi.export("userCodeAppId", user_code_app.id)
+pulumi.export("userCodeAppName", user_code_app.name)
+pulumi.export("userCodeAppUrl", 
+    user_code_app.configuration.apply(lambda config: config.ingress.fqdn if config.ingress else None))
+
+pulumi.export("daemonAppId", daemon_app.id)
+pulumi.export("daemonAppName", daemon_app.name)
+
+pulumi.export("webServerAppId", web_server_app.id)
+pulumi.export("webServerAppName", web_server_app.name)
+pulumi.export("webServerAppUrl", 
+    web_server_app.configuration.apply(lambda config: config.ingress.fqdn if config.ingress else None))
+
+# Role Assignment
+pulumi.export("acrPullRoleAssignmentId", acr_pull_assignment.id)
