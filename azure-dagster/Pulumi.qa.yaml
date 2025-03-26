@@ -11,4 +11,4 @@ config:
   azure-dagster:DAGSTER_POSTGRES_PORT: "5432"
   azure-dagster:USER_CODE_PORT: "4000"
   azure-dagster:DAGSTER_POSTGRES_PASSWORD:
-    secure: AAABAJvbkzZaJKm5T98xlIU2NVIwI5Z+0KgTCHjmyozsuwfHHW+oT/INEBePCQ==
+    secure: AAABAK1RX8XQVpJ2nhlyf4KpU52keOzmA1Xmcb+lVP+nlmfqK3n8ndlYt+w=

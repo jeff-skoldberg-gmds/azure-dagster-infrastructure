@@ -23,7 +23,7 @@
 ## Pulumi Code
 Before running Pulumi code:
 ### Images
-- Bilding, test (locally) and push images into registry (creation in next point), follow `README.md` in `build-test-push-images` folder.
+- Building, test (locally) and push images into registry (creation in next point), follow `README.md` in `build-test-push-images` folder.
 ### Azure Container Registry
 ```bash
 #!/bin/bash
