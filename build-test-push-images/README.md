@@ -26,6 +26,7 @@ docker run --rm \
            -e DAGSTER_POSTGRES_PORT=5432 \
            -e USER_CODE_HOST="localhost" \
            -e USER_CODE_PORT=4000 \
+           -e RUN_TYPE="DAEMON" \
            --network host \
            $IMAGE_NAME_DAEMON:$IMAGE_TAG
 
@@ -38,6 +39,7 @@ docker run --rm \
            -e DAGSTER_POSTGRES_PORT=5432 \
            -e USER_CODE_HOST="localhost" \
            -e USER_CODE_PORT=4000 \
+           -e RUN_TYPE="WEBSERVER" \
            --network host \
            $IMAGE_NAME_WEB_SERVER:$IMAGE_TAG
 

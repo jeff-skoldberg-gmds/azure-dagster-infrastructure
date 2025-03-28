@@ -4,7 +4,8 @@
 # Base image for both webserver and daemon
 FROM python:3.10-slim AS base
 
-RUN pip install \
+RUN apt update && apt install gettext -y && apt autoclean  && \
+    pip install \
     dagster \
     dagster-graphql \
     dagster-webserver \
@@ -15,14 +16,10 @@ ENV DAGSTER_HOME=/opt/dagster/dagster_home/
 
 RUN mkdir -p $DAGSTER_HOME
 
-COPY dagster.yaml workspace.yaml $DAGSTER_HOME
+COPY start_dagster.bash dagster_config_source.yaml workspace.yaml $DAGSTER_HOME
 
 WORKDIR $DAGSTER_HOME
 
-# Webserver image
-FROM base AS webserver
-CMD ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+RUN chmod +x start_dagster.bash
 
-# Daemon image
-FROM base AS daemon
-CMD ["dagster-daemon", "run"]
+CMD ["./start_dagster.bash"]

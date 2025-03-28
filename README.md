@@ -52,27 +52,6 @@ pulumi up
 pulumi destroy
 ```
 
-### Known Issues:
-* ENVIRONMENT VARIABLES:
-    - Even though env variables are set, you see that the following environment variables are not available (`build-test-push-images/dagster.yaml`):
-    ```bash
-    postgres_db:
-        hostname:
-        env: DAGSTER_POSTGRES_HOST
-        username:
-        env: DAGSTER_POSTGRES_USER
-        password:
-        env: DAGSTER_POSTGRES_PASSWORD
-        db_name:
-        env: DAGSTER_POSTGRES_DB
-        port:
-        env: DAGSTER_POSTGRES_PORT
-    ```
-    ![IMAGE](/assets/01.env.png)
-    - [GitHub Issue](https://github.com/dagster-io/dagster/issues/3013)
-    - I'd need to research a solution for this, since locally `dagster.yaml` is taking env variables but not in Azure. For now, a simple solution should be hard code values, rebuild and push images.
-
-
 ## More Info
 ### Docker Compose Deployment
 https://docs.dagster.io/guides/deploy/deployment-options/docker

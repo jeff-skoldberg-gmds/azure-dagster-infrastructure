@@ -24,6 +24,7 @@ IMAGE_TAG = config.require("IMAGE_TAG")
 IMAGE_NAME_USER_CODE = config.require("IMAGE_NAME_USER_CODE")
 IMAGE_NAME_DAEMON = config.require("IMAGE_NAME_DAEMON")
 IMAGE_NAME_WEB_SERVER = config.require("IMAGE_NAME_WEB_SERVER")
+# If not using Assigned Identities to pull/push images, this is not necesary
 SUBSCRIPTION_ID = config.require("SUBSCRIPTION_ID")
 USER_CODE_PORT = config.require("USER_CODE_PORT")
 
@@ -127,12 +128,11 @@ user_code_image = Image(
         "password": acr_password,
     })
 
-daemon_image = Image(
-    "daemonImage",
+dagster_image = Image(
+    "dagsterImage",
     build=DockerBuildArgs(
         context="../build-test-push-images",
         dockerfile="../build-test-push-images/Dockerfile_dagster",
-        target="daemon",
         platform="linux/amd64"
     ),
     image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_DAEMON}:{IMAGE_TAG}"),
@@ -143,46 +143,29 @@ daemon_image = Image(
     }
 )
 
-webserver_image = Image(
-    "webserverImage",
-    build=DockerBuildArgs(
-        context="../build-test-push-images",
-        dockerfile="../build-test-push-images/Dockerfile_dagster",
-        target="webserver",
-
-        platform="linux/amd64"
-    ),
-    image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_WEB_SERVER}:{IMAGE_TAG}"),
-    registry={
-        "server": acr.login_server,
-        "username": acr_username,
-        "password": acr_password,
-    }
-)
-
 acr_o = pulumi.Output.from_input(acr)
 
-## Role to pull image from ACR
-container_app_identity = managedidentity.UserAssignedIdentity(
-    "userAssignedIdentity",
-    location=resource_group.location,
-    resource_group_name=resource_group.name,
-    resource_name_="acrpullidentity",
-    tags={"Environment": ENV})
+## Role to pull image from ACR - Microsoft.Authorization/roleAssignments/write required
+# container_app_identity = managedidentity.UserAssignedIdentity(
+#     "userAssignedIdentity",
+#     location=resource_group.location,
+#     resource_group_name=resource_group.name,
+#     resource_name_="acrpullidentity",
+#     tags={"Environment": ENV})
 
-acr_pull_built_in_id = pulumi.Output.concat(
-    "/subscriptions/", 
-    SUBSCRIPTION_ID,
-    "/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
-)
+# acr_pull_built_in_id = pulumi.Output.concat(
+#     "/subscriptions/", 
+#     SUBSCRIPTION_ID,
+#     "/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+# )
 
-acr_pull_assignment = authorization.RoleAssignment(
-    "acrPullAssignment",
-    principal_id=container_app_identity.principal_id,
-    principal_type=authorization.PrincipalType.SERVICE_PRINCIPAL,
-    role_definition_id=acr_pull_built_in_id,
-    scope=acr_o.apply(lambda x: x.id),
-)
+# acr_pull_assignment = authorization.RoleAssignment(
+#     "acrPullAssignment",
+#     principal_id=container_app_identity.principal_id,
+#     principal_type=authorization.PrincipalType.SERVICE_PRINCIPAL,
+#     role_definition_id=acr_pull_built_in_id,
+#     scope=acr_o.apply(lambda x: x.id),
+# )
 
 ## Container Apps - User Code
 USER_CODE_APP_NAME = "usercode"
@@ -192,9 +175,34 @@ user_code_app = app.ContainerApp(
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    identity=app.ManagedServiceIdentityArgs(
-        type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-        user_assigned_identities=[container_app_identity.id]
+    # identity=app.ManagedServiceIdentityArgs(
+    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
+    #     user_assigned_identities=[container_app_identity.id]
+    # ),
+    configuration=app.ConfigurationArgs(
+        ingress=app.IngressArgs(
+            external=False,
+            transport= app.IngressTransportMethod.TCP,
+            exposed_port=4000,
+            target_port=4000,
+            allow_insecure=False
+        ),
+        secrets=[app.SecretArgs(
+            name="acr-password",
+            value=acr_password
+        )],
+        registries=[
+            app.RegistryCredentialsArgs(
+                username=acr_username, 
+                password_secret_ref="acr-password",
+                server=acr_o.apply(lambda x: x.login_server)
+            )]
+        # Identity
+        # registries=[
+        #     app.RegistryCredentialsArgs(
+        #         identity=container_app_identity.id,
+        #         server=acr_o.apply(lambda x: x.login_server)
+        #     )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
@@ -205,20 +213,6 @@ user_code_app = app.ContainerApp(
                 memory="1.5Gi"
             )
         )]
-    ),
-    configuration=app.ConfigurationArgs(
-        ingress=app.IngressArgs(
-            external=False,
-            transport= app.IngressTransportMethod.TCP,
-            exposed_port=4000,
-            target_port=4000,
-            allow_insecure=False
-        ),
-        registries=[
-            app.RegistryCredentialsArgs(
-                identity=container_app_identity.id,
-                server=acr_o.apply(lambda x: x.login_server)
-            )]
     ),
     tags={"Environment": ENV})
 
@@ -231,7 +225,7 @@ DAGSTER_POSTGRES_DB = "citus"
 USER_CODE_HOST = "usercode"
 # USER_CODE_HOST = user_code_app.configuration.apply(lambda config: config.ingress.fqdn)
 
-def make_container_env_vars(postgres_host, postgres_port, user_code_port, postgres_password):
+def make_container_env_vars(postgres_host, postgres_port, user_code_port, postgres_password, run_type):
     return [
         app.EnvironmentVarArgs(
             name="DAGSTER_POSTGRES_HOST",
@@ -260,16 +254,21 @@ def make_container_env_vars(postgres_host, postgres_port, user_code_port, postgr
         app.EnvironmentVarArgs(
             name="USER_CODE_PORT",
             value=pulumi.Output.from_input(user_code_port)
+        ),
+        app.EnvironmentVarArgs(
+            name="RUN_TYPE",
+            value=run_type
         )
     ]
 
 # Update container app templates to use all Output parameters
-def get_container_env_vars():
+def get_container_env_vars(run_type: str):
     return pulumi.Output.all(
         DAGSTER_POSTGRES_HOST,
         DAGSTER_POSTGRES_PORT,
         USER_CODE_PORT,
-        DAGSTER_POSTGRES_PASSWORD
+        DAGSTER_POSTGRES_PASSWORD,
+        run_type
     ).apply(lambda args: make_container_env_vars(*args))
 
 ## Container Apps - Daemon
@@ -280,22 +279,33 @@ daemon_app = app.ContainerApp(
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    identity=app.ManagedServiceIdentityArgs(
-        type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-        user_assigned_identities=[container_app_identity.id]
-    ),
+    # identity=app.ManagedServiceIdentityArgs(
+    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
+    #     user_assigned_identities=[container_app_identity.id]
+    # ),
     configuration=app.ConfigurationArgs(
+        secrets=[app.SecretArgs(
+            name="acr-password",
+            value=acr_password
+        )],
         registries=[
             app.RegistryCredentialsArgs(
-                identity=container_app_identity.id,
+                username=acr_username, 
+                password_secret_ref="acr-password",
                 server=acr_o.apply(lambda x: x.login_server)
             )]
+        # Identity
+        # registries=[
+        #     app.RegistryCredentialsArgs(
+        #         identity=container_app_identity.id,
+        #         server=acr_o.apply(lambda x: x.login_server)
+        #     )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=daemon_image.image_name,
+            image=dagster_image.image_name,
             name=DAEMON_APP_NAME,
-            env=get_container_env_vars(),
+            env=get_container_env_vars("DAEMON"),
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -311,10 +321,10 @@ web_server_app = app.ContainerApp(
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    identity=app.ManagedServiceIdentityArgs(
-        type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-        user_assigned_identities=[container_app_identity.id]
-    ),
+    # identity=app.ManagedServiceIdentityArgs(
+    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
+    #     user_assigned_identities=[container_app_identity.id]
+    # ),
     configuration=app.ConfigurationArgs(
         ingress=app.IngressArgs(
             external=True,
@@ -322,21 +332,28 @@ web_server_app = app.ContainerApp(
             target_port=3000,
             allow_insecure=False
         ),
+        secrets=[app.SecretArgs(
+            name="acr-password",
+            value=acr_password
+        )],
         registries=[
             app.RegistryCredentialsArgs(
-                identity=container_app_identity.id,
+                username=acr_username, 
+                password_secret_ref="acr-password",
                 server=acr_o.apply(lambda x: x.login_server)
-           )],
-        secrets=[app.SecretArgs(
-            name="db-postgres-pwd",
-            value=DAGSTER_POSTGRES_PASSWORD
-        )]
+            )]
+        # Identity
+        # registries=[
+        #     app.RegistryCredentialsArgs(
+        #         identity=container_app_identity.id,
+        #         server=acr_o.apply(lambda x: x.login_server)
+        #     )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=webserver_image.image_name,
+            image=dagster_image.image_name,
             name=WEB_SERVER_APP_NAME,
-            env=get_container_env_vars(),
+            env=get_container_env_vars("WEBSERVER"),
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -364,10 +381,10 @@ pulumi.export("acrId", acr.id)
 pulumi.export("acrLoginServer", acr.login_server)
 pulumi.export("acrName", acr.name)
 
-# Identity
-pulumi.export("containerAppIdentityId", container_app_identity.id)
-pulumi.export("containerAppIdentityPrincipalId", container_app_identity.principal_id)
-pulumi.export("containerAppIdentityClientId", container_app_identity.client_id)
+# # Identity
+# pulumi.export("containerAppIdentityId", container_app_identity.id)
+# pulumi.export("containerAppIdentityPrincipalId", container_app_identity.principal_id)
+# pulumi.export("containerAppIdentityClientId", container_app_identity.client_id)
 
 # Container Apps
 pulumi.export("userCodeAppId", user_code_app.id)
@@ -385,4 +402,4 @@ pulumi.export(
     web_server_app.configuration.apply(lambda config: config.ingress.fqdn))
 
 # Role Assignment
-pulumi.export("acrPullRoleAssignmentId", acr_pull_assignment.id)
+# pulumi.export("acrPullRoleAssignmentId", acr_pull_assignment.id)

@@ -1,13 +1,13 @@
 config:
   azure-native:location: EastUS
   azure-dagster:DAGSTER_RG: deleterg
-  azure-dagster:ENV: dev
+  azure-dagster:ENV: qa
   azure-dagster:ACR_NAME: dagsacr
   azure-dagster:IMAGE_NAME_USER_CODE: docker_example_user_code_image
   azure-dagster:IMAGE_NAME_DAEMON: docker_example_daemon
   azure-dagster:IMAGE_NAME_WEB_SERVER: docker_example_webserver
   azure-dagster:IMAGE_TAG: latest
-  azure-dagster:SUBSCRIPTION_ID: "68bbddf5-ca54-467a-b26a-d2ca12b58a7a"
+  azure-dagster:SUBSCRIPTION_ID: "f27956ae-b538-441d-ae8b-c12d1a90f8d8"
   azure-dagster:DAGSTER_POSTGRES_PORT: "5432"
   azure-dagster:USER_CODE_PORT: "4000"
   azure-dagster:DAGSTER_POSTGRES_PASSWORD:
