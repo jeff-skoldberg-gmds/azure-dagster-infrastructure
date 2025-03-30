@@ -117,8 +117,8 @@ acr_password = acr_credentials.passwords[0].value
 user_code_image = Image(
     "userCodeImage",
     build=DockerBuildArgs(
-        context="../build-test-push-images",
-        dockerfile="../build-test-push-images/Dockerfile_user_code",
+        context="../dags",
+        dockerfile="../dags/Dockerfile_user_code",
         platform="linux/amd64"
     ),
     image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_USER_CODE}:{IMAGE_TAG}"),
@@ -131,8 +131,8 @@ user_code_image = Image(
 dagster_image = Image(
     "dagsterImage",
     build=DockerBuildArgs(
-        context="../build-test-push-images",
-        dockerfile="../build-test-push-images/Dockerfile_dagster",
+        context="../dagster-backend",
+        dockerfile="../dagster-backend/Dockerfile_dagster",
         platform="linux/amd64"
     ),
     image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_DAEMON}:{IMAGE_TAG}"),
@@ -175,10 +175,6 @@ user_code_app = app.ContainerApp(
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    # identity=app.ManagedServiceIdentityArgs(
-    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-    #     user_assigned_identities=[container_app_identity.id]
-    # ),
     configuration=app.ConfigurationArgs(
         ingress=app.IngressArgs(
             external=False,
