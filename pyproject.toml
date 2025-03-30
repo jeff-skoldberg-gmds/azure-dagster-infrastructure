@@ -1,0 +1,15 @@
+[project]
+name = "azure-dagster-infrastructure"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dagster>=1.10.7",
+    "dagster-postgres>=0.26.7",
+    "dagster-webserver>=1.10.7",
+    "pulumi>=3.0.0,<4.0.0",
+    "pulumi-azure-native>=2.0.0,<3.0.0",
+    "pulumi-docker>=4.6.2",
+    "pulumi-random>=4.18.0",
+]
