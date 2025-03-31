@@ -1,0 +1,5 @@
+load_from:
+  - python_module:
+      module_name: code_location_1
+  - python_module:
+      module_name: code_location_2

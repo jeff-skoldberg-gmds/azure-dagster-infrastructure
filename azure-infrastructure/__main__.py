@@ -145,27 +145,7 @@ dagster_image = Image(
 
 acr_o = pulumi.Output.from_input(acr)
 
-## Role to pull image from ACR - Microsoft.Authorization/roleAssignments/write required
-# container_app_identity = managedidentity.UserAssignedIdentity(
-#     "userAssignedIdentity",
-#     location=resource_group.location,
-#     resource_group_name=resource_group.name,
-#     resource_name_="acrpullidentity",
-#     tags={"Environment": ENV})
 
-# acr_pull_built_in_id = pulumi.Output.concat(
-#     "/subscriptions/", 
-#     SUBSCRIPTION_ID,
-#     "/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
-# )
-
-# acr_pull_assignment = authorization.RoleAssignment(
-#     "acrPullAssignment",
-#     principal_id=container_app_identity.principal_id,
-#     principal_type=authorization.PrincipalType.SERVICE_PRINCIPAL,
-#     role_definition_id=acr_pull_built_in_id,
-#     scope=acr_o.apply(lambda x: x.id),
-# )
 
 ## Container Apps - User Code
 USER_CODE_APP_NAME = "usercode"
@@ -204,6 +184,12 @@ user_code_app = app.ContainerApp(
         containers=[app.ContainerArgs(
             image=user_code_image.image_name,
             name=USER_CODE_APP_NAME,
+            env=[
+                app.EnvironmentVarArgs(
+                    name="FORCE_REDEPLOY",
+                    value=user_code_image.repo_digest  # Triggers redeploy only when image changes
+                )
+            ],
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
