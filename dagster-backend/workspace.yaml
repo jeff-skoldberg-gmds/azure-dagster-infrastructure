@@ -1,8 +1,13 @@
 load_from:
   # Each entry here corresponds to a service that exposes user code.
   - grpc_server:
-      host:
-        env: USER_CODE_HOST
-      port:
-        env: USER_CODE_PORT
-      location_name: "example_user_code"
+      host: dags-location-1
+      port: 4000
+      # host:
+      #   env: USER_CODE_HOST
+      # port:
+      #   env: USER_CODE_PORT
+      # location_name: "example_user_code"
+  - grpc_server:
+      host: dags-location-2
+      port: 4000

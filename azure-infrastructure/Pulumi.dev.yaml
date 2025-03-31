@@ -3,7 +3,8 @@ config:
   azure-dagster:DAGSTER_RG: gmdsACR
   azure-dagster:ENV: dev
   azure-dagster:ACR_NAME: dagster
-  azure-dagster:IMAGE_NAME_USER_CODE: docker_example_user_code_image
+  azure-dagster:IMAGE_DAGS_LOCATION_1: dags-location-1
+  azure-dagster:IMAGE_DAGS_LOCATION_2: dags-location-2
   azure-dagster:IMAGE_NAME_DAEMON: docker_example_daemon
   azure-dagster:IMAGE_NAME_WEB_SERVER: docker_example_webserver
   azure-dagster:IMAGE_TAG: latest

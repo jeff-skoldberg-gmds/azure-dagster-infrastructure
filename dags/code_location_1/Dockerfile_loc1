@@ -11,7 +11,7 @@ RUN pip install \
 
 WORKDIR /opt/dagster/app
 
-COPY . /opt/dagster/app
+COPY . /opt/dagster/app/code_location_1
 
 # Run dagster gRPC server on port 4000
 EXPOSE 4000
