@@ -1,6 +1,9 @@
-# greenmountain-dagster-container
+# Azure Dagster Infrastructure with Pulumi
 
-# Overview
+## UPDATE ME!!
+After overhauling the repo, the readme is not yet updated.  update before sharing!
+
+## Overview
 * Steps to create ACR, build, test and push images: `build-test-push-images/`
 * Pulumi code: `azure-dagster`
     - 1 Resource Group
@@ -16,9 +19,7 @@
 - Install AZ CLI: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli
 - Install Pulumi: https://www.pulumi.com/docs/iac/get-started/azure/begin/
 
-## Basic Tutorial
-- Create project: https://www.pulumi.com/docs/iac/get-started/azure/create-project/
-- Follow documentation to preview, update, deploy and destroy project
+
 
 ## Pulumi Code
 Before running Pulumi code:

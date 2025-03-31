@@ -21,7 +21,9 @@ ACR_NAME= config.require("ACR_NAME")
 DAGSTER_POSTGRES_PASSWORD = config.require_secret("DAGSTER_POSTGRES_PASSWORD")
 DAGSTER_POSTGRES_PORT = config.require("DAGSTER_POSTGRES_PORT")
 IMAGE_TAG = config.require("IMAGE_TAG")
-IMAGE_NAME_USER_CODE = config.require("IMAGE_NAME_USER_CODE")
+IMAGE_NAME_DAGS_LOCATION_1 = config.get("IMAGE_DAGS_LOCATION_1")
+IMAGE_NAME_DAGS_LOCATION_2 = config.get("IMAGE_DAGS_LOCATION_2")
+# IMAGE_NAME_USER_CODE = config.require("IMAGE_NAME_USER_CODE")
 IMAGE_NAME_DAEMON = config.require("IMAGE_NAME_DAEMON")
 IMAGE_NAME_WEB_SERVER = config.require("IMAGE_NAME_WEB_SERVER")
 # If not using Assigned Identities to pull/push images, this is not necesary
@@ -114,14 +116,28 @@ acr_credentials = containerregistry.list_registry_credentials_output(
 acr_username = acr_credentials.username
 acr_password = acr_credentials.passwords[0].value
 
-user_code_image = Image(
-    "userCodeImage",
+dags_location_1_image = Image(
+    "dags-location-1-image",
     build=DockerBuildArgs(
-        context="../build-test-push-images",
-        dockerfile="../build-test-push-images/Dockerfile_user_code",
+        context="../dags/code_location_1",
+        dockerfile="../dags/code_location_1/Dockerfile_loc1",
         platform="linux/amd64"
     ),
-    image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_USER_CODE}:{IMAGE_TAG}"),
+    image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_DAGS_LOCATION_1}:{IMAGE_TAG}"),
+    registry={
+        "server": acr.login_server,
+        "username": acr_username,
+        "password": acr_password,
+    })
+
+dags_location_2_image = Image(
+    "dags-location-2-image",
+    build=DockerBuildArgs(
+        context="../dags/code_location_2",
+        dockerfile="../dags/code_location_2/Dockerfile_loc2",
+        platform="linux/amd64"
+    ),
+    image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_DAGS_LOCATION_2}:{IMAGE_TAG}"),
     registry={
         "server": acr.login_server,
         "username": acr_username,
@@ -131,8 +147,8 @@ user_code_image = Image(
 dagster_image = Image(
     "dagsterImage",
     build=DockerBuildArgs(
-        context="../build-test-push-images",
-        dockerfile="../build-test-push-images/Dockerfile_dagster",
+        context="../dagster-backend",
+        dockerfile="../dagster-backend/Dockerfile_dagster",
         platform="linux/amd64"
     ),
     image_name=acr.login_server.apply(lambda r: f"{r}/{IMAGE_NAME_DAEMON}:{IMAGE_TAG}"),
@@ -145,40 +161,17 @@ dagster_image = Image(
 
 acr_o = pulumi.Output.from_input(acr)
 
-## Role to pull image from ACR - Microsoft.Authorization/roleAssignments/write required
-# container_app_identity = managedidentity.UserAssignedIdentity(
-#     "userAssignedIdentity",
-#     location=resource_group.location,
-#     resource_group_name=resource_group.name,
-#     resource_name_="acrpullidentity",
-#     tags={"Environment": ENV})
 
-# acr_pull_built_in_id = pulumi.Output.concat(
-#     "/subscriptions/", 
-#     SUBSCRIPTION_ID,
-#     "/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
-# )
-
-# acr_pull_assignment = authorization.RoleAssignment(
-#     "acrPullAssignment",
-#     principal_id=container_app_identity.principal_id,
-#     principal_type=authorization.PrincipalType.SERVICE_PRINCIPAL,
-#     role_definition_id=acr_pull_built_in_id,
-#     scope=acr_o.apply(lambda x: x.id),
-# )
 
 ## Container Apps - User Code
-USER_CODE_APP_NAME = "usercode"
-user_code_app = app.ContainerApp(
-    "userCodeApp",
-    container_app_name=USER_CODE_APP_NAME,
+# USER_CODE_APP_NAME = "usercode"
+
+dags_location_1_app = app.ContainerApp(
+    "dags-location-1",
+    container_app_name="dags-location-1",
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    # identity=app.ManagedServiceIdentityArgs(
-    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-    #     user_assigned_identities=[container_app_identity.id]
-    # ),
     configuration=app.ConfigurationArgs(
         ingress=app.IngressArgs(
             external=False,
@@ -197,17 +190,60 @@ user_code_app = app.ContainerApp(
                 password_secret_ref="acr-password",
                 server=acr_o.apply(lambda x: x.login_server)
             )]
-        # Identity
-        # registries=[
-        #     app.RegistryCredentialsArgs(
-        #         identity=container_app_identity.id,
-        #         server=acr_o.apply(lambda x: x.login_server)
-        #     )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
-            image=user_code_image.image_name,
-            name=USER_CODE_APP_NAME,
+            image=dags_location_1_image.image_name,
+            name="dags-location-1",
+            env=[
+                app.EnvironmentVarArgs(
+                    name="FORCE_REDEPLOY",
+                    value=dags_location_1_image.repo_digest  # Triggers redeploy only when image changes.  Necessary for Azure Container apps, otherwise the thing will not restart and it will look like your code is not deployed.
+                )
+            ],
+            resources=app.ContainerResourcesArgs(
+                cpu=0.75,
+                memory="1.5Gi"
+            )
+        )]
+    ),
+    tags={"Environment": ENV})
+
+dags_location_2_app = app.ContainerApp(
+    "dags-location-2",  # Pulumi logical name
+    container_app_name="dags-location-2",
+    location=resource_group.location,
+    resource_group_name=resource_group.name,
+    environment_id=container_env.id,
+    configuration=app.ConfigurationArgs(
+        ingress=app.IngressArgs(
+            external=False,
+            transport= app.IngressTransportMethod.TCP,
+            exposed_port=4000,
+            target_port=4000,
+            allow_insecure=False
+        ),
+        secrets=[app.SecretArgs(
+            name="acr-password",
+            value=acr_password
+        )],
+        registries=[
+            app.RegistryCredentialsArgs(
+                username=acr_username, 
+                password_secret_ref="acr-password",
+                server=acr_o.apply(lambda x: x.login_server)
+            )]
+    ),
+    template=app.TemplateArgs(
+        containers=[app.ContainerArgs(
+            image=dags_location_2_image.image_name,
+            name="dags-location-2",
+            env=[
+                app.EnvironmentVarArgs(
+                    name="FORCE_REDEPLOY",
+                    value=dags_location_2_image.repo_digest  # Triggers redeploy only when image changes.  Necessary for Azure Container apps, otherwise the thing will not restart and it will look like your code is not deployed.
+                )
+            ],
             resources=app.ContainerResourcesArgs(
                 cpu=0.75,
                 memory="1.5Gi"
@@ -237,7 +273,7 @@ def make_container_env_vars(postgres_host, postgres_port, user_code_port, postgr
         ),
         app.EnvironmentVarArgs(
             name="DAGSTER_POSTGRES_PASSWORD",
-            value=postgres_password  # Changed from secret_ref to direct value
+            value=postgres_password
         ),
         app.EnvironmentVarArgs(
             name="DAGSTER_POSTGRES_DB",
@@ -321,10 +357,6 @@ web_server_app = app.ContainerApp(
     location=resource_group.location,
     resource_group_name=resource_group.name,
     environment_id=container_env.id,
-    # identity=app.ManagedServiceIdentityArgs(
-    #     type=app.ManagedServiceIdentityType.USER_ASSIGNED,
-    #     user_assigned_identities=[container_app_identity.id]
-    # ),
     configuration=app.ConfigurationArgs(
         ingress=app.IngressArgs(
             external=True,
@@ -342,12 +374,6 @@ web_server_app = app.ContainerApp(
                 password_secret_ref="acr-password",
                 server=acr_o.apply(lambda x: x.login_server)
             )]
-        # Identity
-        # registries=[
-        #     app.RegistryCredentialsArgs(
-        #         identity=container_app_identity.id,
-        #         server=acr_o.apply(lambda x: x.login_server)
-        #     )]
     ),
     template=app.TemplateArgs(
         containers=[app.ContainerArgs(
@@ -381,17 +407,21 @@ pulumi.export("acrId", acr.id)
 pulumi.export("acrLoginServer", acr.login_server)
 pulumi.export("acrName", acr.name)
 
-# # Identity
-# pulumi.export("containerAppIdentityId", container_app_identity.id)
-# pulumi.export("containerAppIdentityPrincipalId", container_app_identity.principal_id)
-# pulumi.export("containerAppIdentityClientId", container_app_identity.client_id)
-
 # Container Apps
-pulumi.export("userCodeAppId", user_code_app.id)
-pulumi.export("userCodeAppName", user_code_app.name)
-pulumi.export("userCodeAppUrl", 
-    user_code_app.configuration.apply(lambda config: config.ingress.fqdn if config.ingress else None))
+# Container Apps: Dags
+pulumi.export("dagsLocation1AppId", dags_location_1_app.id)
+pulumi.export("dagsLocation1AppName", dags_location_1_app.name)
 
+pulumi.export("dagsLocation2AppId", dags_location_2_app.id)
+pulumi.export("dagsLocation2AppName", dags_location_2_app.name)
+
+pulumi.export("dagsLocation1AppUrl", 
+    dags_location_1_app.configuration.apply(lambda config: config.ingress.fqdn if config.ingress else None))
+
+pulumi.export("dagsLocation2AppUrl", 
+    dags_location_2_app.configuration.apply(lambda config: config.ingress.fqdn if config.ingress else None))
+
+# Container Apps: Dagster infra
 pulumi.export("daemonAppId", daemon_app.id)
 pulumi.export("daemonAppName", daemon_app.name)
 
@@ -401,5 +431,4 @@ pulumi.export(
     "webServerPublicUrl", 
     web_server_app.configuration.apply(lambda config: config.ingress.fqdn))
 
-# Role Assignment
-# pulumi.export("acrPullRoleAssignmentId", acr_pull_assignment.id)
+
